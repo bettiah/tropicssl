@@ -46,25 +46,26 @@
 /*
  * Uncomment if native integers are 8-bit wide.
  *
-#define TROPICSSL_HAVE_INT8
  */
+#define TROPICSSL_HAVE_INT8
 
 /*
  * Uncomment if native integers are 16-bit wide.
  *
-#define TROPICSSL_HAVE_INT16
  */
+#define TROPICSSL_HAVE_INT16
 
 /*
  * Uncomment if the compiler supports long long.
  *
-#define TROPICSSL_HAVE_LONGLONG
  */
+#define TROPICSSL_HAVE_LONGLONG
 
 /*
  * Uncomment to enable the use of assembly code.
- */
+ *
 #define TROPICSSL_HAVE_ASM
+*/
 
 /*
  * Uncomment if the CPU supports SSE2 (IA-32 specific).

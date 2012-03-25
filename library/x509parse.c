@@ -935,6 +935,7 @@ int x509parse_crt(x509_cert * chain, unsigned char *buf, int buflen)
 	return (0);
 }
 
+#ifdef TROPICSSL_FILE_IO
 /*
  * Load one or more certificates and add them to the chained list
  */
@@ -971,6 +972,7 @@ int x509parse_crtfile(x509_cert * chain, char *path)
 
 	return (ret);
 }
+#endif
 
 #if defined(TROPICSSL_DES_C)
 /*
@@ -1225,6 +1227,7 @@ int x509parse_key(rsa_context * rsa, unsigned char *buf, int buflen,
 	return (0);
 }
 
+#ifdef TROPICSSL_FILE_IO
 /*
  * Load and parse a private RSA key
  */
@@ -1265,6 +1268,7 @@ int x509parse_keyfile(rsa_context * rsa, char *path, char *pwd)
 
 	return (ret);
 }
+#endif
 
 #if defined _MSC_VER && !defined snprintf
 #define snprintf _snprintf
@@ -1426,6 +1430,7 @@ char *x509parse_cert_info(char *prefix, x509_cert * crt)
  */
 int x509parse_expired(x509_cert * crt)
 {
+#if 0
 	struct tm *lt;
 	time_t tt;
 
@@ -1443,7 +1448,7 @@ int x509parse_expired(x509_cert * crt)
 	    lt->tm_mon == crt->valid_to.mon - 1 &&
 	    lt->tm_mday > crt->valid_to.day)
 		return (BADCERT_EXPIRED);
-
+#endif
 	return (0);
 }
 
