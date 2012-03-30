@@ -221,8 +221,8 @@
  * Caller:
  *
  * This module provides TCP/IP networking routines.
- */
 #define TROPICSSL_NET_C
+ */
 
 /*
  * Module:  library/padlock.c
@@ -283,8 +283,8 @@
  * Caller:
  *
  * This module is required for SSL/TLS server support.
- */
 #define TROPICSSL_SSL_SRV_C
+ */
 
 /*
  * Module:  library/ssl_tls.c
