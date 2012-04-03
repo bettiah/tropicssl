@@ -66,11 +66,14 @@ static int myrand(void *rng_state)
 
 unsigned char buf[BUFSIZE];
 
-int main(void)
+int benchmark(void)
 {
 	int keysize;
 	unsigned long i, j, tsc;
 	unsigned char tmp[32];
+
+	srand(hardclock());
+
 #if defined(TROPICSSL_ARC4_C)
 	arc4_context arc4;
 #endif
@@ -110,7 +113,6 @@ int main(void)
 
 #if defined(TROPICSSL_MD5_C)
 	printf("  MD5       :  ");
-	fflush(stdout);
 
 	set_alarm(1);
 	for (i = 1; !alarmed; i++)
@@ -120,13 +122,14 @@ int main(void)
 	for (j = 0; j < 1024; j++)
 		md5(buf, BUFSIZE, tmp);
 
-	printf("%9lu Kb/s,  %9lu cycles/byte\n", i * BUFSIZE / 1024,
+	printf("%9lu Kb/s,  %9lx cycles/byte\n", i * BUFSIZE / 1024,
 	       (hardclock() - tsc) / (j * BUFSIZE));
+
+	printf("start %lu, end %d\n", tsc, hardclock());
 #endif
 
 #if defined(TROPICSSL_SHA1_C)
 	printf("  SHA-1     :  ");
-	fflush(stdout);
 
 	set_alarm(1);
 	for (i = 1; !alarmed; i++)
@@ -142,7 +145,6 @@ int main(void)
 
 #if defined(TROPICSSL_SHA2_C)
 	printf("  SHA-256   :  ");
-	fflush(stdout);
 
 	set_alarm(1);
 	for (i = 1; !alarmed; i++)
@@ -158,7 +160,6 @@ int main(void)
 
 #if defined(TROPICSSL_ARC4_C)
 	printf("  ARC4      :  ");
-	fflush(stdout);
 
 	arc4_setup(&arc4, tmp, 32);
 
@@ -176,7 +177,6 @@ int main(void)
 
 #if defined(TROPICSSL_DES_C)
 	printf("  3DES      :  ");
-	fflush(stdout);
 
 	des3_set3key_enc(&des3, tmp);
 
@@ -192,7 +192,6 @@ int main(void)
 	       (hardclock() - tsc) / (j * BUFSIZE));
 
 	printf("  DES       :  ");
-	fflush(stdout);
 
 	des_setkey_enc(&des, tmp);
 
@@ -211,7 +210,6 @@ int main(void)
 #if defined(TROPICSSL_AES_C)
 	for (keysize = 128; keysize <= 256; keysize += 64) {
 		printf("  AES-%d   :  ", keysize);
-		fflush(stdout);
 
 		memset(buf, 0, sizeof(buf));
 		memset(tmp, 0, sizeof(tmp));
@@ -236,7 +234,6 @@ int main(void)
 #if defined(TROPICSSL_CAMELLIA_C)
 	for (keysize = 128; keysize <= 256; keysize += 64) {
 		printf("  CAMELLIA-%d   :  ", keysize);
-		fflush(stdout);
 
 		memset(buf, 0, sizeof(buf));
 		memset(tmp, 0, sizeof(tmp));
@@ -260,10 +257,9 @@ int main(void)
 
 #if defined(TROPICSSL_RSA_C)
 	rsa_init(&rsa, RSA_PKCS_V15, 0, myrand, NULL);
-	rsa_gen_key(&rsa, 1024, 65537);
+	rsa_gen_key(&rsa, 128, 65537);
 
-	printf("  RSA-1024  :  ");
-	fflush(stdout);
+	printf("  RSA-128  :  ");
 	set_alarm(3);
 
 	for (i = 1; !alarmed; i++) {
@@ -273,8 +269,7 @@ int main(void)
 
 	printf("%9lu  public/s\n", i / 3);
 
-	printf("  RSA-1024  :  ");
-	fflush(stdout);
+	printf("  RSA-128  :  ");
 	set_alarm(3);
 
 	for (i = 1; !alarmed; i++) {
