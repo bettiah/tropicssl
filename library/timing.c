@@ -67,7 +67,8 @@ struct _hr_time {
 unsigned long hardclock(void)
 {
 	unsigned long tsc;
-	__asm rdtsc __asm mov[tsc], eax return (tsc);
+	__asm rdtsc __asm mov[tsc], eax
+	return (tsc);
 }
 
 #else

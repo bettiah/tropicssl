@@ -139,8 +139,8 @@
  * Caller:
  *
  * This module enabled the following cipher suites:
- */
 #define TROPICSSL_CAMELLIA_C
+ */
 
 /*
  * Module:  library/certs.c
