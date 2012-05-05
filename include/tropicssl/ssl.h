@@ -80,6 +80,13 @@
 #define SSL_MINOR_VERSION_1             1	/*!< TLS v1.0 */
 #define SSL_MINOR_VERSION_2             2	/*!< TLS v1.1 */
 
+#define DTLS_MAJOR_VERSION_1            254
+#define DTLS_MINOR_VERSION_0            255	/*!< DTLS v1.0 */
+#define DTLS_MINOR_VERSION_1            254	/*!< DTLS v1.1 */
+#define DTLS_MINOR_VERSION_2            253	/*!< DTLS v1.2 */
+
+#define SSL_IS_DATAGRAM					1
+
 #define SSL_IS_CLIENT                   0
 #define SSL_IS_SERVER                   1
 #define SSL_COMPRESS_NULL               0
@@ -88,7 +95,7 @@
 #define SSL_VERIFY_OPTIONAL             1
 #define SSL_VERIFY_REQUIRED             2
 
-#define SSL_MAX_CONTENT_LEN         16384
+#define SSL_MAX_CONTENT_LEN         1024*2
 
 /*
  * Allow an extra 512 bytes for the record header
@@ -127,6 +134,7 @@
 #define SSL_HS_HELLO_REQUEST            0
 #define SSL_HS_CLIENT_HELLO             1
 #define SSL_HS_SERVER_HELLO             2
+#define SSL_HS_HELLO_VERIFY_REQUEST     3
 #define SSL_HS_CERTIFICATE             11
 #define SSL_HS_SERVER_KEY_EXCHANGE     12
 #define SSL_HS_CERTIFICATE_REQUEST     13
@@ -222,6 +230,8 @@ struct _ssl_context {
 
 	int in_msgtype;		/*!< record header: message type      */
 	int in_msglen;		/*!< record header: message length    */
+	int in_epoc;		/*!< dtls record header: epoc		  */
+	int in_seq;			/*!< dtls record header: sequence number */
 	int in_left;		/*!< amount of data read so far       */
 
 	int in_hslen;		/*!< current handshake message length */
@@ -236,6 +246,13 @@ struct _ssl_context {
 
 	int out_msgtype;	/*!< record header: message type      */
 	int out_msglen;		/*!< record header: message length    */
+	int out_epoc;		/*!< dtls record header: epoc		  */
+	long long out_seq;	/*!< dtls record header: sequence number */
+
+	int out_hs_msgseq;	/*!< dtls handshake message sequence */
+	int out_hs_fragment_offset;	/*!< dtls handshake fragment offset */
+	int out_hs_fragment_length;	/*!< dtls handshake fragment length */
+
 	int out_left;		/*!< amount of data not yet written   */
 
 	/*
@@ -251,6 +268,7 @@ struct _ssl_context {
 	int authmode;		/*!<  verification mode       */
 	int client_auth;	/*!<  flag for client auth.   */
 	int verify_result;	/*!<  verification result     */
+	int datagram;		/*!<  dtls flag				  */
 
 	/*
 	 * Crypto layer
@@ -360,6 +378,8 @@ extern "C" {
 			 int (*f_recv) (void *, unsigned char *, int),
 			 void *p_recv, int (*f_send) (void *, unsigned char *,
 						      int), void *p_send);
+
+	void ssl_set_datagram(ssl_context * ssl);
 
 	/**
 	 * \brief          Set the session callbacks (server-side only)

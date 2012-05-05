@@ -54,11 +54,19 @@ static int ssl_write_client_hello(ssl_context * ssl)
 
 	SSL_DEBUG_MSG(2, ("=> write client hello"));
 
-	ssl->major_ver = SSL_MAJOR_VERSION_3;
-	ssl->minor_ver = SSL_MINOR_VERSION_0;
+	if(ssl->datagram) {
+		ssl->major_ver = DTLS_MAJOR_VERSION_1;
+		ssl->minor_ver = DTLS_MINOR_VERSION_0;
 
-	ssl->max_major_ver = SSL_MAJOR_VERSION_3;
-	ssl->max_minor_ver = SSL_MINOR_VERSION_1;
+		ssl->max_major_ver = DTLS_MAJOR_VERSION_1;
+		ssl->max_minor_ver = DTLS_MINOR_VERSION_0;
+	} else {
+		ssl->major_ver = SSL_MAJOR_VERSION_3;
+		ssl->minor_ver = SSL_MINOR_VERSION_0;
+
+		ssl->max_major_ver = SSL_MAJOR_VERSION_3;
+		ssl->max_minor_ver = SSL_MINOR_VERSION_1;
+	}
 
 	/*
 	 *         0  .   0       handshake type
@@ -69,13 +77,25 @@ static int ssl_write_client_hello(ssl_context * ssl)
 	 */
 	buf = ssl->out_msg;
 	p = buf + 4;
+	if(ssl->datagram) {
+		/*
+		*         4  .   5       message sequence
+		*         6  .   8       fragment offet
+		*		  9  .  11       fragment length
+		*/
+		p += 8;
+	}
 
 	*p++ = (unsigned char)ssl->max_major_ver;
 	*p++ = (unsigned char)ssl->max_minor_ver;
 
-	SSL_DEBUG_MSG(3, ("client hello, max version: [%d:%d]",
-			  buf[4], buf[5]));
-
+	if(ssl->datagram) {
+		SSL_DEBUG_MSG(3, ("client hello, max version: [%d:%d]",
+			buf[8+4], buf[8+5]));
+	} else {
+		SSL_DEBUG_MSG(3, ("client hello, max version: [%d:%d]",
+			buf[4], buf[5]));
+	}
 	t = time(NULL);
 	*p++ = (unsigned char)(t >> 24);
 	*p++ = (unsigned char)(t >> 16);
@@ -87,9 +107,9 @@ static int ssl_write_client_hello(ssl_context * ssl)
 	for (i = 28; i > 0; i--)
 		*p++ = (unsigned char)ssl->f_rng(ssl->p_rng);
 
-	memcpy(ssl->randbytes, buf + 6, 32);
+	memcpy(ssl->randbytes, buf + (ssl->datagram ? 6+8 : 6), 32);
 
-	SSL_DEBUG_BUF(3, "client hello, random bytes", buf + 6, 32);
+	SSL_DEBUG_BUF(3, "client hello, random bytes", buf + (ssl->datagram ? 6+8 : 6), 32);
 
 	/*
 	 *        38  .  38       session id length
@@ -111,7 +131,13 @@ static int ssl_write_client_hello(ssl_context * ssl)
 		*p++ = ssl->session->id[i];
 
 	SSL_DEBUG_MSG(3, ("client hello, session id len.: %d", n));
-	SSL_DEBUG_BUF(3, "client hello, session id", buf + 39, n);
+	SSL_DEBUG_BUF(3, "client hello, session id", buf + (ssl->datagram ? 39+8 : 39), n);
+
+	// TODO cookie
+	if(ssl->datagram) {
+		*p++ = (unsigned char)0;
+		SSL_DEBUG_MSG(3, ("client cookie len.: %d", 0));
+	}
 
 	for (n = 0; ssl->ciphers[n] != 0; n++) ;
 	*p++ = (unsigned char)(n >> 7);

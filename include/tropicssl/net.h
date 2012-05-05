@@ -59,6 +59,7 @@ extern "C" {
 	 *                      TROPICSSL_ERR_NET_CONNECT_FAILED
 	 */
 	int net_connect(int *fd, char *host, int port);
+	int net_connect_udp(int *fd, char *host, int port);
 
 	/**
 	 * \brief          Create a listening socket on bind_ip:port.
