@@ -71,6 +71,7 @@
 #define TROPICSSL_ERR_SSL_BAD_HS_CERTIFICATE_VERIFY         -0xD000
 #define TROPICSSL_ERR_SSL_BAD_HS_CHANGE_CIPHER_SPEC         -0xD800
 #define TROPICSSL_ERR_SSL_BAD_HS_FINISHED                   -0xE000
+#define TROPICSSL_ERR_SSL_BAD_HS_SERVER_HELLO_VERIFY		-0xE800
 
 /*
  * Various constants
@@ -155,6 +156,7 @@
 typedef enum {
 	SSL_HELLO_REQUEST,
 	SSL_CLIENT_HELLO,
+	SSL_SERVER_HELLOVERIFY,
 	SSL_SERVER_HELLO,
 	SSL_SERVER_CERTIFICATE,
 	SSL_SERVER_KEY_EXCHANGE,
@@ -231,10 +233,17 @@ struct _ssl_context {
 	int in_msgtype;		/*!< record header: message type      */
 	int in_msglen;		/*!< record header: message length    */
 	int in_epoc;		/*!< dtls record header: epoc		  */
-	int in_seq;			/*!< dtls record header: sequence number */
+	long long in_seq;	/*!< dtls record header: sequence number */
 	int in_left;		/*!< amount of data read so far       */
 
+	int in_udp;
+	int cookielen;
+
 	int in_hslen;		/*!< current handshake message length */
+	int in_hs_msgseq;
+	int in_hs_fragment_offset;
+	int in_hs_fragment_length;
+
 	int nb_zero;		/*!< # of 0-length encrypted messages */
 
 	/*
@@ -297,6 +306,7 @@ struct _ssl_context {
 	unsigned long ctx_enc[128];	/*!<  encryption context      */
 	unsigned long ctx_dec[128];	/*!<  decryption context      */
 
+	unsigned char cookie[20];    /*!<  DTLS cookie			  */
 	/*
 	 * TLS extensions
 	 */

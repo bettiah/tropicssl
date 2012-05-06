@@ -47,7 +47,7 @@
 
 static int ssl_write_client_hello(ssl_context * ssl)
 {
-	int ret, i, n;
+	int ret, i, n, k;
 	unsigned char *buf;
 	unsigned char *p;
 	time_t t;
@@ -114,8 +114,10 @@ static int ssl_write_client_hello(ssl_context * ssl)
 	/*
 	 *        38  .  38       session id length
 	 *        39  . 39+n  session id
-	 *       40+n . 41+n  cipherlist length
-	 *       42+n . ..        cipherlist
+	 *     40+8+n . 40+8+n  cookie length
+	 *     41+8+n . 41+8+k  cookie
+	 *       41+k . 42+k  cipherlist length
+	 *       43+k . ..        cipherlist
 	 *       ..       . ..    compression alg. (0)
 	 *       ..       . ..    extensions (unused)
 	 */
@@ -133,10 +135,13 @@ static int ssl_write_client_hello(ssl_context * ssl)
 	SSL_DEBUG_MSG(3, ("client hello, session id len.: %d", n));
 	SSL_DEBUG_BUF(3, "client hello, session id", buf + (ssl->datagram ? 39+8 : 39), n);
 
-	// TODO cookie
+	// cookie
 	if(ssl->datagram) {
-		*p++ = (unsigned char)0;
-		SSL_DEBUG_MSG(3, ("client cookie len.: %d", 0));
+		*p++ = (unsigned char)ssl->cookielen;
+		for(k = 0; k < ssl->cookielen; k++)
+			*p++ = (unsigned char)ssl->cookie[k];
+
+		SSL_DEBUG_BUF(3, "client hello, cookie bytes", buf + 39+8+1+k, ssl->cookielen);
 	}
 
 	for (n = 0; ssl->ciphers[n] != 0; n++) ;
@@ -188,7 +193,12 @@ static int ssl_write_client_hello(ssl_context * ssl)
 	ssl->out_msgtype = SSL_MSG_HANDSHAKE;
 	ssl->out_msg[0] = SSL_HS_CLIENT_HELLO;
 
-	ssl->state++;
+	// set next sate
+	if(ssl->datagram && ssl->cookielen == 0) {
+		ssl->state = SSL_SERVER_HELLOVERIFY;
+	} else {
+		ssl->state = SSL_SERVER_HELLO;
+	}
 
 	if ((ret = ssl_write_record(ssl)) != 0) {
 		SSL_DEBUG_RET(1, "ssl_write_record", ret);
@@ -200,10 +210,68 @@ static int ssl_write_client_hello(ssl_context * ssl)
 	return (0);
 }
 
+static int ssl_parse_server_helloverify(ssl_context * ssl)
+{
+	unsigned char *buf;
+	int ret;
+
+	SSL_DEBUG_MSG(2, ("=> parse server hello verify"));
+
+	/*
+	 *         0  .   0       handshake type
+	 *         1  .   3       handshake length
+	 *		   4  .	  5		  message sequence
+	 *		   6  .   8		  fragment offset
+	 *		   9  .  12	  	  fragment length
+	 *        12  .  13       protocol version
+	 *        14  .  34       cookie
+	 */
+	buf = ssl->in_msg;
+
+	if ((ret = ssl_read_record(ssl)) != 0) {
+		SSL_DEBUG_RET(1, "ssl_read_record", ret);
+		return (ret);
+	}
+
+	if (ssl->in_msgtype != SSL_MSG_HANDSHAKE) {
+		SSL_DEBUG_MSG(1, ("bad server hello verify message"));
+		return (TROPICSSL_ERR_SSL_UNEXPECTED_MESSAGE);
+	}
+
+	SSL_DEBUG_MSG(3, ("server hello verify, chosen version: [%d:%d]",
+			  buf[12], buf[13]));
+
+	if (ssl->in_hslen < 20 ||
+	    buf[0] != SSL_HS_HELLO_VERIFY_REQUEST || buf[12] != DTLS_MAJOR_VERSION_1) {
+		SSL_DEBUG_MSG(1, ("bad server hello verify message"));
+		return (TROPICSSL_ERR_SSL_BAD_HS_SERVER_HELLO_VERIFY);
+	}
+
+	if (buf[13] != DTLS_MINOR_VERSION_0 && buf[13] != DTLS_MINOR_VERSION_2) {
+		SSL_DEBUG_MSG(1, ("bad server hello verify message"));
+		return (TROPICSSL_ERR_SSL_BAD_HS_SERVER_HELLO_VERIFY);
+	}
+
+	ssl->cookielen = buf[14];
+
+	memcpy(ssl->cookie, buf + 15, ssl->cookielen);
+
+	SSL_DEBUG_BUF(3, "server hello verify, cookie bytes", buf + 15, buf[14]);
+
+	ssl->state = SSL_CLIENT_HELLO;
+
+	// reset handshake length, so that next ssl_read_record does not fail
+	ssl->in_hslen = 0;
+
+	SSL_DEBUG_MSG(2, ("<= parser server hello verify"));
+
+	return 0;
+}
+
 static int ssl_parse_server_hello(ssl_context * ssl)
 {
 	time_t t;
-	int ret, i, n;
+	int ret, i, n, doff;
 	int ext_len;
 	unsigned char *buf;
 
@@ -228,33 +296,42 @@ static int ssl_parse_server_hello(ssl_context * ssl)
 		return (TROPICSSL_ERR_SSL_UNEXPECTED_MESSAGE);
 	}
 
+	doff = ssl->datagram ? 8 : 0;
+
 	SSL_DEBUG_MSG(3, ("server hello, chosen version: [%d:%d]",
-			  buf[4], buf[5]));
+					  buf[4 + doff], buf[5 + doff]));
 
 	if (ssl->in_hslen < 42 ||
-	    buf[0] != SSL_HS_SERVER_HELLO || buf[4] != SSL_MAJOR_VERSION_3) {
+	    buf[0] != SSL_HS_SERVER_HELLO ||
+		(ssl->datagram ? buf[4 + doff] != DTLS_MAJOR_VERSION_1
+		: buf[4 + doff] != SSL_MAJOR_VERSION_3)) {
 		SSL_DEBUG_MSG(1, ("bad server hello message"));
 		return (TROPICSSL_ERR_SSL_BAD_HS_SERVER_HELLO);
 	}
 
-	if (buf[5] != SSL_MINOR_VERSION_0 && buf[5] != SSL_MINOR_VERSION_1) {
+	if (buf[5 + doff] != SSL_MINOR_VERSION_0 &&
+		(ssl->datagram
+		 ?(buf[5 + doff] != DTLS_MINOR_VERSION_0 &&
+		   buf[5 + doff] != DTLS_MINOR_VERSION_2)
+		 : buf[5 + doff] != SSL_MINOR_VERSION_1)) {
 		SSL_DEBUG_MSG(1, ("bad server hello message"));
 		return (TROPICSSL_ERR_SSL_BAD_HS_SERVER_HELLO);
 	}
 
-	ssl->minor_ver = buf[5];
+	ssl->minor_ver = buf[5 + doff];
 
-	t = ((time_t) buf[6] << 24)
-	    | ((time_t) buf[7] << 16)
-	    | ((time_t) buf[8] << 8)
-	    | ((time_t) buf[9]);
+	t = ((time_t) buf[6 + doff] << 24)
+	    | ((time_t) buf[7 + doff] << 16)
+	    | ((time_t) buf[8 + doff] << 8)
+	    | ((time_t) buf[9 + doff]);
 
-	memcpy(ssl->randbytes + 32, buf + 6, 32);
+	memcpy(ssl->randbytes + 32, buf + 6 + doff, 32);
 
-	n = buf[38];
+	// session length
+	n = buf[38 + doff];
 
 	SSL_DEBUG_MSG(3, ("server hello, current time: %lu", t));
-	SSL_DEBUG_BUF(3, "server hello, random bytes", buf + 6, 32);
+	SSL_DEBUG_BUF(3, "server hello, random bytes", buf + 6 + doff, 32);
 
 	/*
 	 *        38  .  38       session id length
@@ -264,22 +341,22 @@ static int ssl_parse_server_hello(ssl_context * ssl)
 	 *       42+n . 43+n  extensions length
 	 *       44+n . 44+n+m extensions
 	 */
-	if (n < 0 || n > 32 || ssl->in_hslen > 42 + n) {
-		ext_len = ((buf[42 + n] << 8)
-			   | (buf[43 + n])) + 2;
+	if (n < 0 || n > 32 || ssl->in_hslen > 42 + n + doff) {
+		ext_len = ((buf[42 + n + doff] << 8)
+			   | (buf[43 + n + doff])) + 2;
 	} else {
 		ext_len = 0;
 	}
 
-	if (n < 0 || n > 32 || ssl->in_hslen != 42 + n + ext_len) {
+	if (n < 0 || n > 32 || ssl->in_hslen != (42 + n + doff + ext_len)) {
 		SSL_DEBUG_MSG(1, ("bad server hello message"));
 		return (TROPICSSL_ERR_SSL_BAD_HS_SERVER_HELLO);
 	}
 
-	i = (buf[39 + n] << 8) | buf[40 + n];
+	i = (buf[39 + n + doff] << 8) | buf[40 + n + doff];
 
 	SSL_DEBUG_MSG(3, ("server hello, session id len.: %d", n));
-	SSL_DEBUG_BUF(3, "server hello, session id", buf + 39, n);
+	SSL_DEBUG_BUF(3, "server hello, session id", buf + 39 + doff, n);
 
 	/*
 	 * Check if the session can be resumed
@@ -287,13 +364,13 @@ static int ssl_parse_server_hello(ssl_context * ssl)
 	if (ssl->resume == 0 || n == 0 ||
 	    ssl->session->cipher != i ||
 	    ssl->session->length != n ||
-	    memcmp(ssl->session->id, buf + 39, n) != 0) {
+	    memcmp(ssl->session->id, buf + 39 + doff, n) != 0) {
 		ssl->state++;
 		ssl->resume = 0;
 		ssl->session->start = time(NULL);
 		ssl->session->cipher = i;
 		ssl->session->length = n;
-		memcpy(ssl->session->id, buf + 39, n);
+		memcpy(ssl->session->id, buf + 39 + doff, n);
 	} else {
 		ssl->state = SSL_SERVER_CHANGE_CIPHER_SPEC;
 		ssl_derive_keys(ssl);
@@ -303,7 +380,7 @@ static int ssl_parse_server_hello(ssl_context * ssl)
 			  ssl->resume ? "a" : "no"));
 
 	SSL_DEBUG_MSG(3, ("server hello, chosen cipher: %d", i));
-	SSL_DEBUG_MSG(3, ("server hello, compress alg.: %d", buf[41 + n]));
+	SSL_DEBUG_MSG(3, ("server hello, compress alg.: %d", buf[41 + n + doff]));
 
 	i = 0;
 	while (1) {
@@ -316,7 +393,7 @@ static int ssl_parse_server_hello(ssl_context * ssl)
 			break;
 	}
 
-	if (buf[41 + n] != SSL_COMPRESS_NULL) {
+	if (buf[41 + n + doff] != SSL_COMPRESS_NULL) {
 		SSL_DEBUG_MSG(1, ("bad server hello message"));
 		return (TROPICSSL_ERR_SSL_BAD_HS_SERVER_HELLO);
 	}
@@ -330,7 +407,7 @@ static int ssl_parse_server_hello(ssl_context * ssl)
 
 static int ssl_parse_server_key_exchange(ssl_context * ssl)
 {
-	int ret, n;
+	int ret, n, doff;
 	unsigned char *p, *end;
 	unsigned char hash[36];
 	md5_context md5;
@@ -373,7 +450,8 @@ static int ssl_parse_server_key_exchange(ssl_context * ssl)
 	 *         opaque dh_Ys<1..2^16-1>;
 	 * } ServerDHParams;
 	 */
-	p = ssl->in_msg + 4;
+	doff = ssl->datagram ? 8 : 0;
+	p = ssl->in_msg + doff + 4;
 	end = ssl->in_msg + ssl->in_hslen;
 
 	if ((ret = dhm_read_params(&ssl->dhm_ctx, &p, end)) != 0) {
@@ -408,16 +486,16 @@ static int ssl_parse_server_key_exchange(ssl_context * ssl)
 	 *         SHA(ClientHello.random + ServerHello.random
 	 *                                                        + ServerParams);
 	 */
-	n = ssl->in_hslen - (end - p) - 6;
+	n = ssl->in_hslen - (end - p) - 6 - doff;
 
 	md5_starts(&md5);
 	md5_update(&md5, ssl->randbytes, 64);
-	md5_update(&md5, ssl->in_msg + 4, n);
+	md5_update(&md5, ssl->in_msg + doff + 4, n);
 	md5_finish(&md5, hash);
 
 	sha1_starts(&sha1);
 	sha1_update(&sha1, ssl->randbytes, 64);
-	sha1_update(&sha1, ssl->in_msg + 4, n);
+	sha1_update(&sha1, ssl->in_msg + doff + 4, n);
 	sha1_finish(&sha1, hash + 16);
 
 	SSL_DEBUG_BUF(3, "parameters hash", hash, 36);
@@ -495,7 +573,7 @@ static int ssl_parse_server_hello_done(ssl_context * ssl)
 		}
 	}
 
-	if (ssl->in_hslen != 4 || ssl->in_msg[0] != SSL_HS_SERVER_HELLO_DONE) {
+	if (ssl->in_hslen != (ssl->datagram ? 4 + 8 : 4) || ssl->in_msg[0] != SSL_HS_SERVER_HELLO_DONE) {
 		SSL_DEBUG_MSG(1, ("bad server hello done message"));
 		return (TROPICSSL_ERR_SSL_BAD_HS_SERVER_HELLO_DONE);
 	}
@@ -674,7 +752,9 @@ int ssl_handshake_client(ssl_context * ssl)
 		case SSL_CLIENT_HELLO:
 			ret = ssl_write_client_hello(ssl);
 			break;
-
+		case SSL_SERVER_HELLOVERIFY:
+			ret = ssl_parse_server_helloverify(ssl);
+			break;
 			/*
 			 *      <==       ServerHello
 			 *                Certificate
