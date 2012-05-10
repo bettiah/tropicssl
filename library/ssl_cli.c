@@ -228,8 +228,8 @@ static int ssl_parse_server_helloverify(ssl_context * ssl)
 	 */
 	buf = ssl->in_msg;
 
-	if ((ret = ssl_read_record(ssl)) != 0) {
-		SSL_DEBUG_RET(1, "ssl_read_record", ret);
+	if ((ret = ssl_read_handshake(ssl)) != 0) {
+		SSL_DEBUG_RET(1, "ssl_read_handshake", ret);
 		return (ret);
 	}
 
@@ -260,7 +260,7 @@ static int ssl_parse_server_helloverify(ssl_context * ssl)
 
 	ssl->state = SSL_CLIENT_HELLO;
 
-	// reset handshake length, so that next ssl_read_record does not fail
+	// reset handshake length, so that next ssl_read_handshake does not fail
 	ssl->in_hslen = 0;
 
 	SSL_DEBUG_MSG(2, ("<= parser server hello verify"));
@@ -286,8 +286,8 @@ static int ssl_parse_server_hello(ssl_context * ssl)
 	 */
 	buf = ssl->in_msg;
 
-	if ((ret = ssl_read_record(ssl)) != 0) {
-		SSL_DEBUG_RET(1, "ssl_read_record", ret);
+	if ((ret = ssl_read_handshake(ssl)) != 0) {
+		SSL_DEBUG_RET(1, "ssl_read_handshake", ret);
 		return (ret);
 	}
 
@@ -304,7 +304,7 @@ static int ssl_parse_server_hello(ssl_context * ssl)
 	if (ssl->in_hslen < 42 ||
 	    buf[0] != SSL_HS_SERVER_HELLO ||
 		(ssl->datagram ? buf[4 + doff] != DTLS_MAJOR_VERSION_1
-		: buf[4 + doff] != SSL_MAJOR_VERSION_3)) {
+		: buf[4] != SSL_MAJOR_VERSION_3)) {
 		SSL_DEBUG_MSG(1, ("bad server hello message"));
 		return (TROPICSSL_ERR_SSL_BAD_HS_SERVER_HELLO);
 	}
@@ -313,7 +313,7 @@ static int ssl_parse_server_hello(ssl_context * ssl)
 		(ssl->datagram
 		 ?(buf[5 + doff] != DTLS_MINOR_VERSION_0 &&
 		   buf[5 + doff] != DTLS_MINOR_VERSION_2)
-		 : buf[5 + doff] != SSL_MINOR_VERSION_1)) {
+		 : buf[5] != SSL_MINOR_VERSION_1)) {
 		SSL_DEBUG_MSG(1, ("bad server hello message"));
 		return (TROPICSSL_ERR_SSL_BAD_HS_SERVER_HELLO);
 	}
@@ -426,8 +426,8 @@ static int ssl_parse_server_key_exchange(ssl_context * ssl)
 	SSL_DEBUG_MSG(1, ("support for dhm in not available"));
 	return (TROPICSSL_ERR_SSL_FEATURE_UNAVAILABLE);
 #else
-	if ((ret = ssl_read_record(ssl)) != 0) {
-		SSL_DEBUG_RET(1, "ssl_read_record", ret);
+	if ((ret = ssl_read_handshake(ssl)) != 0) {
+		SSL_DEBUG_RET(1, "ssl_read_handshake", ret);
 		return (ret);
 	}
 
@@ -452,6 +452,7 @@ static int ssl_parse_server_key_exchange(ssl_context * ssl)
 	 */
 	doff = ssl->datagram ? 8 : 0;
 	p = ssl->in_msg + doff + 4;
+	// hslen already has doff+4
 	end = ssl->in_msg + ssl->in_hslen;
 
 	if ((ret = dhm_read_params(&ssl->dhm_ctx, &p, end)) != 0) {
@@ -486,6 +487,7 @@ static int ssl_parse_server_key_exchange(ssl_context * ssl)
 	 *         SHA(ClientHello.random + ServerHello.random
 	 *                                                        + ServerParams);
 	 */
+	// sizeof(serverparams)
 	n = ssl->in_hslen - (end - p) - 6 - doff;
 
 	md5_starts(&md5);
@@ -531,8 +533,8 @@ static int ssl_parse_certificate_request(ssl_context * ssl)
 	 *        n+4 .. ...  Distinguished Name #1
 	 *        ... .. ...  length of DN 2, etc.
 	 */
-	if ((ret = ssl_read_record(ssl)) != 0) {
-		SSL_DEBUG_RET(1, "ssl_read_record", ret);
+	if ((ret = ssl_read_handshake(ssl)) != 0) {
+		SSL_DEBUG_RET(1, "ssl_read_handshake", ret);
 		return (ret);
 	}
 
@@ -562,8 +564,8 @@ static int ssl_parse_server_hello_done(ssl_context * ssl)
 	SSL_DEBUG_MSG(2, ("=> parse server hello done"));
 
 	if (ssl->client_auth != 0) {
-		if ((ret = ssl_read_record(ssl)) != 0) {
-			SSL_DEBUG_RET(1, "ssl_read_record", ret);
+		if ((ret = ssl_read_handshake(ssl)) != 0) {
+			SSL_DEBUG_RET(1, "ssl_read_handshake", ret);
 			return (ret);
 		}
 
@@ -587,9 +589,11 @@ static int ssl_parse_server_hello_done(ssl_context * ssl)
 
 static int ssl_write_client_key_exchange(ssl_context * ssl)
 {
-	int ret, i, n;
+	int ret, i, n, doff;
 
 	SSL_DEBUG_MSG(2, ("=> write client key exchange"));
+
+	doff = ssl->datagram ? 8 : 0;
 
 	if (ssl->session->cipher == SSL_EDH_RSA_DES_168_SHA ||
 	    ssl->session->cipher == SSL_EDH_RSA_AES_256_SHA ||
@@ -603,9 +607,9 @@ static int ssl_write_client_key_exchange(ssl_context * ssl)
 		 */
 		n = ssl->dhm_ctx.len;
 
-		ssl->out_msg[4] = (unsigned char)(n >> 8);
-		ssl->out_msg[5] = (unsigned char)(n);
-		i = 6;
+		ssl->out_msg[4+doff] = (unsigned char)(n >> 8);
+		ssl->out_msg[5+doff] = (unsigned char)(n);
+		i = 6 + doff;
 
 		ret = dhm_make_public(&ssl->dhm_ctx, 256,
 				      &ssl->out_msg[i], n,
@@ -641,7 +645,7 @@ static int ssl_write_client_key_exchange(ssl_context * ssl)
 			ssl->premaster[i] =
 			    (unsigned char)ssl->f_rng(ssl->p_rng);
 
-		i = 4;
+		i = 4 + doff;
 		n = ssl->peer_cert->rsa.len;
 
 		if (ssl->minor_ver != SSL_MINOR_VERSION_0) {

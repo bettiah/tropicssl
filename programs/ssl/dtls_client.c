@@ -52,7 +52,7 @@
 #include "../lwipcfg_msvc.h"
 
 #define SERVER_PORT 4443
-#define SERVER_NAME "192.168.1.3"
+#define SERVER_NAME "192.168.1.4"
 #define GET_REQUEST "GET / HTTP/1.0\r\n\r\n"
 /*
   #define SERVER_NAME "tropicssl.org"
@@ -65,7 +65,7 @@ void ssl_debug(void *ctx, int level, char *str)
 {
 	if(str[strlen(str)-1] == '\n')
 		printf("[%4d] %s", sys_now(), str);
-	else 
+	else
 		printf("%s", str);
 
 	fflush(stdout);

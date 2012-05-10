@@ -104,6 +104,7 @@
  */
 #define SSL_BUFFER_LEN (SSL_MAX_CONTENT_LEN + 512)
 
+#define SSL_MTU_LEN		SSL_MAX_CONTENT_LEN
 /*
  * Supported ciphersuites
  */
@@ -236,7 +237,10 @@ struct _ssl_context {
 	long long in_seq;	/*!< dtls record header: sequence number */
 	int in_left;		/*!< amount of data read so far       */
 
-	int in_udp;
+	int in_datagram_buf;
+	int in_datagram_buf_used;
+	unsigned char *in_datagram_buf_frag;
+
 	int cookielen;
 
 	int in_hslen;		/*!< current handshake message length */
@@ -555,6 +559,7 @@ extern "C" {
 	void ssl_calc_verify(ssl_context * ssl, unsigned char hash[36]);
 
 	int ssl_read_record(ssl_context * ssl);
+	int ssl_read_handshake(ssl_context * ssl);
 	int ssl_fetch_input(ssl_context * ssl, int nb_want);
 
 	int ssl_write_record(ssl_context * ssl);

@@ -780,6 +780,48 @@ static int ssl_decrypt_buf(ssl_context * ssl)
 	return (0);
 }
 
+static int recv_udp(ssl_context * ssl, int want_len)
+{
+	int ret, available;
+
+	SSL_DEBUG_MSG(2, ("=> receive udp"));
+
+	SSL_DEBUG_MSG(2, ("in_datagram_buf: %d, in_datagram_buf_used: %d", ssl->in_datagram_buf, ssl->in_datagram_buf_used));
+
+	// move over remaining data
+	available = want_len > ssl->in_datagram_buf ? ssl->in_datagram_buf : want_len;
+	memcpy(ssl->in_hdr + ssl->in_left, ssl->in_datagram_buf_frag + ssl->in_datagram_buf_used, available);
+	ssl->in_datagram_buf -= available;
+	ssl->in_datagram_buf_used += available;
+	want_len -= available;
+	ret = available;
+	SSL_DEBUG_MSG(2, ("in_datagram_buf: %d, in_datagram_buf_used: %d, available: %d, want_len: %d",
+		ssl->in_datagram_buf, ssl->in_datagram_buf_used, available, want_len));
+
+	// wants more
+	if(want_len > 0) {
+		ssl->in_datagram_buf_used = 0;
+		ssl->in_datagram_buf = ssl->f_recv(ssl->p_recv, ssl->in_datagram_buf_frag, SSL_MTU_LEN);
+		if(ssl->in_datagram_buf < want_len) {
+			SSL_DEBUG_MSG(2, ("in_datagram_buf: %d, unable to assemble multiple packets ", ssl->in_datagram_buf));			
+			ret = ssl->in_datagram_buf;
+		}
+		else {
+			// copy over required data
+			available = want_len > ssl->in_datagram_buf ? ssl->in_datagram_buf : want_len;
+			memcpy(ssl->in_hdr + ssl->in_left + ret, ssl->in_datagram_buf_frag + ssl->in_datagram_buf_used, available);
+			ssl->in_datagram_buf -= available;
+			ssl->in_datagram_buf_used += available;
+			ret += available;
+			SSL_DEBUG_MSG(2, ("in_datagram_buf: %d, in_datagram_buf_used: %d, ret: %d, available: %d",
+				ssl->in_datagram_buf, ssl->in_datagram_buf_used, ret, available));
+		}
+	}
+
+	SSL_DEBUG_MSG(2, ("<= receive udp"));
+	return ret;
+}
+
 /*
  * Fill the input message buffer
  */
@@ -792,16 +834,7 @@ int ssl_fetch_input(ssl_context * ssl, int nb_want)
 	while (ssl->in_left < nb_want) {
 		len = nb_want - ssl->in_left;
 		if(ssl->datagram) {
-			if(ssl->in_udp < len) {
-				ssl->in_udp = ssl->f_recv(ssl->p_recv, ssl->in_hdr + ssl->in_left, SSL_BUFFER_LEN - ssl->in_left - 8);
-				if(ssl->in_udp < 0)
-					ret = ssl->in_udp;
-				else
-					ret = len;
-			} else {
-				ret = len;
-			}
-			ssl->in_udp -= len;
+			ret = recv_udp(ssl, len);
 		} else {
 			ret = ssl->f_recv(ssl->p_recv, ssl->in_hdr + ssl->in_left, len);
 		}
@@ -944,6 +977,83 @@ int ssl_write_record(ssl_context * ssl)
 	return (0);
 }
 
+static int merge_next_fragment(ssl_context* ssl)
+{
+	int msglen, fraglen;
+
+	SSL_DEBUG_MSG(2, ("=> next fragment"));
+
+	// get header
+	if(recv_udp(ssl, 5+8) < 0)
+		return (TROPICSSL_ERR_SSL_INVALID_RECORD);
+
+	ssl->in_msgtype = ssl->in_hdr[0 + ssl->in_left];
+	ssl->in_epoc = (ssl->in_hdr[3 + ssl->in_left] << 8)
+		| ssl->in_hdr[4 + ssl->in_left];
+	ssl->in_seq =
+		((long long)ssl->in_hdr[5 + ssl->in_left] << 40) |
+		((long long)ssl->in_hdr[6 + ssl->in_left] << 32) |
+		(ssl->in_hdr[7 + ssl->in_left] << 24) |
+		(ssl->in_hdr[8 + ssl->in_left] << 16) |
+		(ssl->in_hdr[9 + ssl->in_left] << 8) |
+		ssl->in_hdr[10 + ssl->in_left];
+	msglen = (ssl->in_hdr[11 + ssl->in_left] << 8)
+		| ssl->in_hdr[12 + ssl->in_left];
+
+	SSL_DEBUG_MSG(3, ("input record: msgtype = %d, "
+					  "epoc = %d, sequence number = %d, msglen = %d",
+					  ssl->in_msgtype,
+					  ssl->in_epoc,
+					  (int)ssl->in_seq,
+					  msglen));
+	if (ssl->in_msgtype != SSL_MSG_HANDSHAKE) {
+		return (TROPICSSL_ERR_SSL_INVALID_RECORD);
+	}
+
+	// this will overwrite the previous 11 bytes
+	if(recv_udp(ssl, msglen) < 0)
+		return (TROPICSSL_ERR_SSL_INVALID_RECORD);
+
+	// should be same as old in_hslen
+	if(ssl->in_hslen !=
+	   (ssl->in_hdr[1+ssl->in_left] << 16
+		| (ssl->in_hdr[2+ssl->in_left] << 8)
+		| ssl->in_hdr[3+ssl->in_left])) {
+		SSL_DEBUG_MSG(3, ("incorrect handshake fragment: hslen = %d",
+						  (ssl->in_hdr[1+ssl->in_left] << 16)
+						  | (ssl->in_hdr[2+ssl->in_left] << 8)
+						  | ssl->in_hdr[3+ssl->in_left]));
+		return (TROPICSSL_ERR_SSL_INVALID_RECORD);
+	}
+	SSL_DEBUG_MSG(3, ("handshake message: msglen = %d, hslen = %d",
+					  msglen, ssl->in_hslen));
+
+	ssl->in_hs_msgseq = (ssl->in_hdr[4+ssl->in_left] << 8)
+		| ssl->in_hdr[5+ssl->in_left];
+	ssl->in_hs_fragment_offset = (ssl->in_hdr[6+ssl->in_left] << 16)
+		| (ssl->in_hdr[7+ssl->in_left] << 8)
+		| ssl->in_hdr[8+ssl->in_left];
+	// update total fragment length
+	fraglen = (ssl->in_hdr[9+ssl->in_left] << 16)
+		| (ssl->in_hdr[10+ssl->in_left] << 8)
+		| ssl->in_hdr[11+ssl->in_left];
+	SSL_DEBUG_MSG(3, ("handshake message: msgseq ="
+					  " %d, fragment offset = %d, fragment length = %d",
+					  ssl->in_hs_msgseq, ssl->in_hs_fragment_offset,
+					  fraglen));
+	// now move the data into place
+	memmove(ssl->in_hdr + ssl->in_left,
+			ssl->in_hdr + ssl->in_left + 12,
+			fraglen);
+	// update counters
+	ssl->in_left += fraglen;
+	ssl->in_hs_fragment_length += fraglen;
+	ssl->in_msglen += fraglen;
+
+	SSL_DEBUG_MSG(2, ("=> next fragment"));
+	return 0;
+}
+
 int ssl_read_record(ssl_context * ssl)
 {
 	int ret;
@@ -960,9 +1070,7 @@ int ssl_read_record(ssl_context * ssl)
 		       ssl->in_msglen);
 
 		ssl->in_hslen = 4;
-		ssl->in_hslen += ssl->datagram
-			? (ssl->in_msg[1+8] << 16) | (ssl->in_msg[2+8] << 8) | ssl->in_msg[3+8]
-			: (ssl->in_msg[2] << 8) | ssl->in_msg[3];
+		ssl->in_hslen += (ssl->in_msg[1] << 16) | (ssl->in_msg[2] << 8) | ssl->in_msg[3];
 
 		SSL_DEBUG_MSG(3, ("handshake message: msglen ="
 				  " %d, type = %d, hslen = %d",
@@ -1099,46 +1207,6 @@ int ssl_read_record(ssl_context * ssl)
 		}
 	}
 
-	if (ssl->in_msgtype == SSL_MSG_HANDSHAKE) {
-		ssl->in_hslen = 4;
-		if(ssl->datagram)
-			ssl->in_hslen += 8;
-
-		ssl->in_hslen += (ssl->datagram
-						  ? (ssl->in_msg[1+8] << 16) | (ssl->in_msg[2+8] << 8) | ssl->in_msg[3+8]
-						  : (ssl->in_msg[1] << 16) | (ssl->in_msg[2] << 8) | ssl->in_msg[3]);
-
-		SSL_DEBUG_MSG(3, ("handshake message: msglen ="
-				  " %d, type = %d, hslen = %d",
-				  ssl->in_msglen, ssl->in_msg[0],
-				  ssl->in_hslen));
-
-		if(ssl->datagram) {
-			ssl->in_hs_msgseq = (ssl->in_msg[4] << 8) | ssl->in_msg[5];
-			ssl->in_hs_fragment_offset = (ssl->in_msg[6] << 16) | (ssl->in_msg[7] << 8) | ssl->in_msg[8];
-			ssl->in_hs_fragment_length = (ssl->in_msg[9] << 16) | (ssl->in_msg[10] << 8) | ssl->in_msg[11];
-			SSL_DEBUG_MSG(3, ("handshake message: msgseq ="
-					  " %d, fragment offset = %d, fragment length = %d",
-					  ssl->in_hs_msgseq, ssl->in_hs_fragment_offset,
-					  ssl->in_hs_fragment_length));
-		}
-		/*
-		 * Additional checks to validate the handshake header
-		 */
-		if (ssl->in_msglen < 4 || ssl->in_msg[1] != 0) {
-			SSL_DEBUG_MSG(1, ("bad handshake length"));
-			return (TROPICSSL_ERR_SSL_INVALID_RECORD);
-		}
-
-		if (ssl->in_msglen < ssl->in_hslen) {
-			SSL_DEBUG_MSG(1, ("bad handshake length"));
-			return (TROPICSSL_ERR_SSL_INVALID_RECORD);
-		}
-
-		md5_update(&ssl->fin_md5, ssl->in_msg, ssl->in_hslen);
-		sha1_update(&ssl->fin_sha1, ssl->in_msg, ssl->in_hslen);
-	}
-
 	if (ssl->in_msgtype == SSL_MSG_ALERT) {
 		SSL_DEBUG_MSG(2, ("got an alert message, type: [%d:%d]",
 				  ssl->in_msg[0], ssl->in_msg[1]));
@@ -1159,9 +1227,68 @@ int ssl_read_record(ssl_context * ssl)
 		}
 	}
 
+	SSL_DEBUG_MSG(2, ("<= read record"));
+	return 0;
+}
+
+int ssl_read_handshake(ssl_context * ssl)
+{
+	int ret;
+
+	SSL_DEBUG_MSG(2, ("=> read handshake"));
+
+	if((ret = ssl_read_record(ssl)) < 0)
+		return ret;
+
+	if (ssl->in_msgtype == SSL_MSG_HANDSHAKE) {
+		ssl->in_hslen = (ssl->in_msg[1] << 16) | (ssl->in_msg[2] << 8) | ssl->in_msg[3];
+
+		SSL_DEBUG_MSG(3, ("handshake message: type = %d, hslen = %d",
+						  ssl->in_msg[0], ssl->in_hslen));
+
+		if(ssl->datagram) {
+			ssl->in_hs_msgseq = (ssl->in_msg[4] << 8) | ssl->in_msg[5];
+			ssl->in_hs_fragment_offset = (ssl->in_msg[6] << 16)
+				| (ssl->in_msg[7] << 8)
+				| ssl->in_msg[8];
+			ssl->in_hs_fragment_length = (ssl->in_msg[9] << 16)
+				| (ssl->in_msg[10] << 8)
+				| ssl->in_msg[11];
+			SSL_DEBUG_MSG(3, ("handshake message: msgseq ="
+					  " %d, fragment offset = %d, fragment length = %d",
+					  ssl->in_hs_msgseq, ssl->in_hs_fragment_offset,
+					  ssl->in_hs_fragment_length));
+
+			while(ssl->in_hslen > ssl->in_hs_fragment_length) {
+				if(merge_next_fragment(ssl) != 0)
+					return (TROPICSSL_ERR_SSL_INVALID_RECORD);
+			}
+		}
+
+		ssl->in_hslen += 4;
+		if(ssl->datagram)
+			ssl->in_hslen += 8;
+
+		/*
+		 * Additional checks to validate the handshake header
+		 */
+		if (ssl->in_msglen < 4 || ssl->in_msg[1] != 0) {
+			SSL_DEBUG_MSG(1, ("bad handshake length"));
+			return (TROPICSSL_ERR_SSL_INVALID_RECORD);
+		}
+
+		if (ssl->in_msglen < ssl->in_hslen) {
+			SSL_DEBUG_MSG(1, ("bad handshake length"));
+			return (TROPICSSL_ERR_SSL_INVALID_RECORD);
+		}
+
+		md5_update(&ssl->fin_md5, ssl->in_msg, ssl->in_hslen);
+		sha1_update(&ssl->fin_sha1, ssl->in_msg, ssl->in_hslen);
+	}
+
 	ssl->in_left = 0;
 
-	SSL_DEBUG_MSG(2, ("<= read record"));
+	SSL_DEBUG_MSG(2, ("<= read handshake"));
 
 	return (0);
 }
@@ -1270,8 +1397,8 @@ int ssl_parse_certificate(ssl_context * ssl)
 		return (0);
 	}
 
-	if ((ret = ssl_read_record(ssl)) != 0) {
-		SSL_DEBUG_RET(1, "ssl_read_record", ret);
+	if ((ret = ssl_read_handshake(ssl)) != 0) {
+		SSL_DEBUG_RET(1, "ssl_read_handshake", ret);
 		return (ret);
 	}
 
@@ -1422,8 +1549,8 @@ int ssl_parse_change_cipher_spec(ssl_context * ssl)
 
 	ssl->do_crypt = 0;
 
-	if ((ret = ssl_read_record(ssl)) != 0) {
-		SSL_DEBUG_RET(1, "ssl_read_record", ret);
+	if ((ret = ssl_read_handshake(ssl)) != 0) {
+		SSL_DEBUG_RET(1, "ssl_read_handshake", ret);
 		return (ret);
 	}
 
@@ -1528,9 +1655,15 @@ static void ssl_calc_finished(ssl_context * ssl, unsigned char *buf, int from,
 	SSL_DEBUG_MSG(2, ("<= calc  finished"));
 }
 
+static void dtls_increment_epoc(ssl_context * ssl)
+{
+	ssl->out_epoc++;
+	ssl->out_seq = 0;
+}
+
 int ssl_write_finished(ssl_context * ssl)
 {
-	int ret, hash_len;
+	int ret, hash_len, doff;
 	md5_context md5;
 	sha1_context sha1;
 
@@ -1539,11 +1672,15 @@ int ssl_write_finished(ssl_context * ssl)
 	memcpy(&md5, &ssl->fin_md5, sizeof(md5_context));
 	memcpy(&sha1, &ssl->fin_sha1, sizeof(sha1_context));
 
-	ssl_calc_finished(ssl, ssl->out_msg + 4, ssl->endpoint, &md5, &sha1);
+	if(ssl->datagram) {
+		doff = 8;
+		dtls_increment_epoc(ssl);
+	}
+	ssl_calc_finished(ssl, ssl->out_msg + 4 + doff, ssl->endpoint, &md5, &sha1);
 
 	hash_len = (ssl->minor_ver == SSL_MINOR_VERSION_0) ? 36 : 12;
 
-	ssl->out_msglen = 4 + hash_len;
+	ssl->out_msglen = 4 + hash_len + doff;
 	ssl->out_msgtype = SSL_MSG_HANDSHAKE;
 	ssl->out_msg[0] = SSL_HS_FINISHED;
 
@@ -1585,8 +1722,8 @@ int ssl_parse_finished(ssl_context * ssl)
 
 	ssl->do_crypt = 1;
 
-	if ((ret = ssl_read_record(ssl)) != 0) {
-		SSL_DEBUG_RET(1, "ssl_read_record", ret);
+	if ((ret = ssl_read_handshake(ssl)) != 0) {
+		SSL_DEBUG_RET(1, "ssl_read_handshake", ret);
 		return (ret);
 	}
 
@@ -1650,6 +1787,9 @@ int ssl_init(ssl_context * ssl)
 		free(ssl->in_ctr);
 		return (1);
 	}
+
+	ssl->in_datagram_buf_frag = (unsigned char *)malloc(SSL_MTU_LEN);
+	memset(ssl->in_datagram_buf_frag, 0, SSL_MTU_LEN);
 
 	memset(ssl->in_ctr, 0, SSL_BUFFER_LEN);
 	memset(ssl->out_ctr, 0, SSL_BUFFER_LEN);
